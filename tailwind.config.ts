@@ -10,18 +10,18 @@ const config: Config = {
     extend: {
       colors: {
         brand: {
-          DEFAULT: "#14532D",
-          light: "#1E6B3C",
-          dark: "#0E3A1F",
-          soft: "#DCE9DF",
+          DEFAULT: "#991B1B",
+          light: "#B91C1C",
+          dark: "#7F1D1D",
+          soft: "#FBE0E0",
         },
-        sand: "#E8E3D8",
+        sand: "#FDF4F4",
         prio1: "#DC2626",
-        prio2: "#EAB308",
+        prio2: "#EA580C",
         prio3: "#16A34A",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(20,83,45,0.06), 0 4px 14px rgba(20,83,45,0.06)",
+        card: "0 1px 2px rgba(153,27,27,0.06), 0 4px 14px rgba(153,27,27,0.06)",
         sheet: "0 -8px 30px rgba(0,0,0,0.18)",
       },
       keyframes: {

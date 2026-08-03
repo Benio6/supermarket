@@ -57,8 +57,8 @@ export const PRIO_META: Record<
     emoji: "🟡",
     label: "רגיל",
     desc: "עוד מעט נגמר — בקנייה הקרובה",
-    color: "#EAB308",
-    chip: "bg-yellow-50 text-yellow-700 border-yellow-200",
+    color: "#EA580C",
+    chip: "bg-orange-50 text-orange-700 border-orange-200",
   },
   3: {
     emoji: "🟢",

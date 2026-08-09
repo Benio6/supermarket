@@ -2,55 +2,122 @@
 
 import { useMemo, useState } from "react";
 import FilterChips from "@/components/FilterChips";
-import { clearDone, removeItem, toggleDone, updateItem, useItems } from "@/lib/store";
+import Sheet from "@/components/Sheet";
+import StorePicker from "@/components/StorePicker";
 import {
+  clearDone,
+  readMemory,
+  removeItem,
+  todayIndex,
+  toggleDone,
+  updateItem,
+  useItems,
+} from "@/lib/store";
+import { activeStore, useStores } from "@/lib/stores";
+import {
+  DAY_NAMES,
+  FILTERS,
+  PRICE_OPTIONS,
   PRIO_META,
-  filterItems,
-  groupByDept,
+  allowedPriosFor,
+  priceLabel,
   type FilterId,
+  type Prio,
 } from "@/lib/types";
+import { buildViews, filterViews, groupViews, sortViews } from "@/lib/view";
+
+const ALL_PRIOS: Prio[] = [1, 2, 3];
 
 export default function ShopPage() {
   const items = useItems();
+  const stores = useStores();
   const [filter, setFilter] = useState<FilterId>("all");
+  const [picking, setPicking] = useState(false);
 
-  const filtered = useMemo(() => filterItems(items, filter), [items, filter]);
+  const store = activeStore(stores);
+  const today = todayIndex();
+  const mem = useMemo(() => readMemory(), [items]);
 
-  const groups = useMemo(() => {
-    // בתוך כל מחלקה: לא קנוי דחוף → לא קנוי רגיל → קנוי
-    const sorted = [...filtered].sort((a, b) => {
-      if (a.done !== b.done) return a.done ? 1 : -1;
-      if (a.prio !== b.prio) return a.prio - b.prio;
-      return a.at - b.at;
-    });
-    return groupByDept(sorted);
-  }, [filtered]);
+  // הסופר קובע תקרה, והצ'יפים יכולים לצמצם אותה עוד — אף פעם לא להרחיב
+  const storePrios = store ? allowedPriosFor(store.priceLevel) : ALL_PRIOS;
+  const chipPrios = FILTERS.find((f) => f.id === filter)?.prios ?? ALL_PRIOS;
+  const effectivePrios = storePrios.filter((p) => chipPrios.includes(p));
 
-  const total = filtered.length;
-  const done = filtered.filter((i) => i.done).length;
+  const visible = useMemo(
+    () => filterViews(buildViews(items, mem, today), effectivePrios),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, mem, today, effectivePrios.join(",")]
+  );
+
+  // אם נלמד מסלול בסופר הזה — המחלקות מסודרות לפיו
+  const groups = useMemo(
+    () => groupViews(sortViews(visible), store?.route),
+    [visible, store?.route]
+  );
+
+  const total = visible.length;
+  const done = visible.filter((v) => v.item.done).length;
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
   const doneInList = items.some((i) => i.done);
+  const hiddenByStore = items.filter(
+    (i) => !i.done && !storePrios.includes(i.prio)
+  ).length;
 
   return (
     <main className="flex-1 pb-28">
       <header className="sticky top-0 z-20 bg-sand/95 backdrop-blur">
         <div className="px-4 pb-3 pt-6">
           <div className="mb-2 flex items-end justify-between">
-            <div>
+            <div className="min-w-0">
               <h1 className="text-2xl font-black text-brand">בסופר</h1>
               <p className="text-sm text-brand/50">
-                {done} מתוך {total} נקנו
+                {done} מתוך {total} נקנו · יום {DAY_NAMES[today]}
               </p>
             </div>
             <span className="text-3xl font-black text-brand">{pct}%</span>
           </div>
 
-          <div className="h-2.5 w-full overflow-hidden rounded-full bg-brand/10">
+          <div className="mb-3 h-2.5 w-full overflow-hidden rounded-full bg-brand/10">
             <div
               className="h-full rounded-full bg-brand transition-all duration-300"
               style={{ width: `${pct}%` }}
             />
           </div>
+
+          <button
+            onClick={() => setPicking(true)}
+            className="flex w-full items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-right text-sm transition active:scale-[0.99]"
+          >
+            <span className="text-lg">
+              {store
+                ? (PRICE_OPTIONS.find((p) => p.level === store.priceLevel)?.emoji ?? "🏪")
+                : "🏪"}
+            </span>
+            <span className="min-w-0 flex-1 truncate">
+              {store ? (
+                <>
+                  <span className="font-bold text-brand">{store.name}</span>
+                  <span className="text-brand/50"> · {priceLabel(store.priceLevel)}</span>
+                </>
+              ) : (
+                <span className="text-brand/50">באיזה סופר אתם?</span>
+              )}
+            </span>
+            <span className="shrink-0 text-brand/40">החלפה ›</span>
+          </button>
+
+          {store?.route?.length ? (
+            <p className="mt-2 text-xs text-brand/45">
+              🧭 מסודר לפי המסלול שלכם ב{store.name} ({store.routeVisits ?? 0} ביקורים)
+            </p>
+          ) : null}
+
+          {hiddenByStore > 0 && (
+            <p className="mt-2 text-xs text-brand/45">
+              {hiddenByStore} פריטים מוסתרים כי {store?.name} מוגדר כ
+              {priceLabel(store!.priceLevel)}
+            </p>
+          )}
         </div>
         <FilterChips value={filter} onChange={setFilter} />
       </header>
@@ -58,28 +125,30 @@ export default function ShopPage() {
       {groups.length === 0 ? (
         <div className="px-6 py-20 text-center">
           <div className="mb-3 text-5xl">🎉</div>
-          <p className="font-medium text-brand/60">אין מה לקנות</p>
+          <p className="font-medium text-brand/60">אין מה לקנות כאן</p>
           <p className="mt-1 text-sm text-brand/40">
-            הוסיפו פריטים במסך הרשימה
+            {hiddenByStore > 0
+              ? "יש פריטים שמוסתרים בגלל רמת המחיר של הסופר"
+              : "הוסיפו פריטים במסך הרשימה"}
           </p>
         </div>
       ) : (
         <div className="space-y-5 px-4">
-          {groups.map(({ dept, items: deptItems }) => {
-            const deptDone = deptItems.filter((i) => i.done).length;
+          {groups.map(({ dept, views }) => {
+            const deptDone = views.filter((v) => v.item.done).length;
             return (
               <section key={dept.id}>
                 <h2 className="mb-2 flex items-center gap-2 px-1 text-sm font-bold text-brand/60">
                   <span className="text-base">{dept.emoji}</span>
                   {dept.name}
                   <span className="text-xs font-medium text-brand/35">
-                    {deptDone}/{deptItems.length}
+                    {deptDone}/{views.length}
                   </span>
                 </h2>
 
                 <ul className="card divide-y divide-black/5 overflow-hidden">
-                  {deptItems.map((item) => {
-                    const meta = PRIO_META[item.prio];
+                  {views.map(({ item, prio, boosted }) => {
+                    const meta = PRIO_META[prio];
                     return (
                       <li
                         key={item.id}
@@ -127,6 +196,7 @@ export default function ShopPage() {
                                 >
                                   {meta.emoji} {meta.label}
                                 </span>
+                                {boosted && <span className="shrink-0 text-xs">⏰</span>}
                               </div>
                               {item.note && (
                                 <div className="mt-0.5 truncate text-xs text-brand/45">
@@ -180,6 +250,10 @@ export default function ShopPage() {
           </button>
         </div>
       )}
+
+      <Sheet open={picking} onClose={() => setPicking(false)} title="באיזה סופר אתם?">
+        <StorePicker onPicked={() => setPicking(false)} />
+      </Sheet>
     </main>
   );
 }

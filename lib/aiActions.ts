@@ -3,22 +3,48 @@
 import {
   addItem,
   classifyInBackground,
+  downgradeItemPrio,
   getItems,
   normalizeName,
   removeItem,
   rememberProduct,
+  setUsageDays,
   updateItem,
 } from "./store";
-import { isDeptId, type DeptId, type Prio } from "./types";
+import {
+  DAY_NAMES,
+  PRIO_META,
+  deptOf,
+  isDeptId,
+  type DeptId,
+  type Prio,
+  type WeekDay,
+} from "./types";
 
 export type AiAction =
-  | { op: "add"; name: string; dept?: DeptId; prio?: Prio; note?: string; qty?: string }
-  | { op: "done"; name: string }
-  | { op: "undone"; name: string }
-  | { op: "delete"; name: string }
-  | { op: "prio"; name: string; prio: Prio };
+  | { action: "add"; name: string; dept?: DeptId; prio?: Prio; note?: string; qty?: string }
+  | { action: "update_prio"; name: string; prio: Prio }
+  | { action: "remove"; name: string }
+  | { action: "check"; name: string }
+  | { action: "downgrade_prio"; name: string }
+  | { action: "set_usage_days"; name: string; usedOn: WeekDay[] };
+
+export type ActionResult = {
+  /** אישור קצר להצגה: "הוספתי חלב (דחוף) 🥛" */
+  text: string;
+  kind: AiAction["action"];
+};
 
 const BLOCK = /<ACTIONS>([\s\S]*?)<\/ACTIONS>/;
+
+const VALID = [
+  "add",
+  "update_prio",
+  "remove",
+  "check",
+  "downgrade_prio",
+  "set_usage_days",
+];
 
 /** מוציא את בלוק הפעולות מהתשובה ומחזיר גם את הטקסט הנקי להצגה */
 export function parseActions(reply: string): {
@@ -34,7 +60,7 @@ export function parseActions(reply: string): {
     const parsed = JSON.parse(match[1].trim());
     if (Array.isArray(parsed)) actions = parsed.filter(isValidAction);
   } catch {
-    /* JSON לא תקין — מתעלמים ומציגים רק את הטקסט */
+    /* JSON לא תקין — מציגים רק את הטקסט */
   }
   return { text, actions };
 }
@@ -42,8 +68,12 @@ export function parseActions(reply: string): {
 function isValidAction(a: unknown): a is AiAction {
   if (!a || typeof a !== "object") return false;
   const obj = a as Record<string, unknown>;
+  // תמיכה גם ב-"op" מהגרסה הקודמת של הפרוטוקול
+  const kind = obj.action ?? obj.op;
+  if (typeof kind !== "string" || !VALID.includes(kind)) return false;
   if (typeof obj.name !== "string" || !obj.name.trim()) return false;
-  return ["add", "done", "undone", "delete", "prio"].includes(String(obj.op));
+  obj.action = kind;
+  return true;
 }
 
 function findItem(name: string) {
@@ -60,23 +90,33 @@ function asPrio(v: unknown): Prio | undefined {
   return v === 1 || v === 2 || v === 3 ? v : undefined;
 }
 
-/** מפעיל את הפעולות על הרשימה ומחזיר תיאור קצר של מה קרה */
-export function applyActions(actions: AiAction[]): string[] {
-  const log: string[] = [];
+function label(prio: Prio): string {
+  return PRIO_META[prio].label;
+}
+
+/** מפעיל את הפעולות על הרשימה ומחזיר אישורים קצרים להצגה בצ'אט */
+export function applyActions(actions: AiAction[]): ActionResult[] {
+  const results: ActionResult[] = [];
 
   for (const action of actions) {
     const name = action.name.trim();
     if (!name) continue;
 
-    if (action.op === "add") {
+    if (action.action === "add") {
       const dept = isDeptId(action.dept) ? action.dept : undefined;
       const prio = asPrio(action.prio) ?? 2;
       const existing = findItem(name);
+
       if (existing && !existing.done) {
         updateItem(existing.id, { prio });
-        log.push(`עודכן: ${existing.name}`);
+        rememberProduct(existing.name, existing.dept, prio);
+        results.push({
+          kind: "add",
+          text: `עדכנתי ${existing.name} (${label(prio)}) ${deptOf(existing.dept).emoji}`,
+        });
         continue;
       }
+
       const item = addItem({
         name,
         dept,
@@ -90,31 +130,65 @@ export function applyActions(actions: AiAction[]): string[] {
       } else {
         void classifyInBackground(item);
       }
-      log.push(`נוסף: ${item.name}`);
+      results.push({
+        kind: "add",
+        text: `הוספתי ${item.name} (${label(prio)}) ${deptOf(item.dept).emoji}`,
+      });
+      continue;
+    }
+
+    if (action.action === "set_usage_days") {
+      const days = Array.isArray(action.usedOn)
+        ? (action.usedOn.filter(
+            (d) => typeof d === "number" && d >= 0 && d <= 6
+          ) as WeekDay[])
+        : [];
+      setUsageDays(name, days);
+      results.push({
+        kind: "set_usage_days",
+        text: days.length
+          ? `אזכור ש${name} לימי ${days.map((d) => DAY_NAMES[d]).join(", ")} 🗓️`
+          : `רשמתי ש${name} בלי יום קבוע 🗓️`,
+      });
       continue;
     }
 
     const item = findItem(name);
     if (!item) continue;
 
-    if (action.op === "done") {
-      updateItem(item.id, { done: true });
-      log.push(`סומן כנקנה: ${item.name}`);
-    } else if (action.op === "undone") {
-      updateItem(item.id, { done: false });
-      log.push(`הוחזר לרשימה: ${item.name}`);
-    } else if (action.op === "delete") {
-      removeItem(item.id);
-      log.push(`נמחק: ${item.name}`);
-    } else if (action.op === "prio") {
-      const prio = asPrio(action.prio);
-      if (prio) {
+    switch (action.action) {
+      case "update_prio": {
+        const prio = asPrio(action.prio);
+        if (!prio) break;
         updateItem(item.id, { prio });
         rememberProduct(item.name, item.dept, prio);
-        log.push(`עדיפות עודכנה: ${item.name}`);
+        results.push({
+          kind: "update_prio",
+          text: `עדכנתי ${item.name} ל${label(prio)} ${PRIO_META[prio].emoji}`,
+        });
+        break;
+      }
+      case "downgrade_prio": {
+        const next = downgradeItemPrio(item.id);
+        if (!next) break;
+        results.push({
+          kind: "downgrade_prio",
+          text: `הורדתי את ${item.name} ל${label(next)} ${PRIO_META[next].emoji}`,
+        });
+        break;
+      }
+      case "check": {
+        updateItem(item.id, { done: true });
+        results.push({ kind: "check", text: `סימנתי ${item.name} כנקנה ✅` });
+        break;
+      }
+      case "remove": {
+        removeItem(item.id);
+        results.push({ kind: "remove", text: `הסרתי ${item.name} 🗑️` });
+        break;
       }
     }
   }
 
-  return log;
+  return results;
 }

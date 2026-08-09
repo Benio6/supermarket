@@ -27,10 +27,77 @@ export type Item = {
   qty: string;
 };
 
-export type ProductMemory = Record<
-  string,
-  { dept: DeptId; prio: Prio; count: number }
->;
+/** יום בשבוע — 0 = ראשון, 6 = שבת (תואם ל-Date.getDay) */
+export type WeekDay = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+export const DAY_NAMES = [
+  "ראשון",
+  "שני",
+  "שלישי",
+  "רביעי",
+  "חמישי",
+  "שישי",
+  "שבת",
+] as const;
+
+export type ProductMemoryEntry = {
+  dept: DeptId;
+  prio: Prio;
+  /** באילו ימים בשבוע משתמשים במוצר */
+  usedOn: WeekDay[];
+  /** כמה פעמים ברציפות נוסף עם אותה עדיפות */
+  count: number;
+  /** כמה פעמים כבר שאלנו על המוצר — כדי לא לשאול שוב */
+  askCount: number;
+};
+
+export type ProductMemory = Record<string, ProductMemoryEntry>;
+
+/** אחרי כמה פעמים עם אותה עדיפות מפסיקים לשאול */
+export const CONFIDENT_AFTER = 3;
+
+export type PriceLevel = 1 | 2 | 3 | 4 | 5;
+
+export type Store = {
+  id: string;
+  name: string;
+  priceLevel: PriceLevel;
+  lastVisited: number;
+  /** סדר המחלקות שנלמד מהביקורים בסופר הזה */
+  route?: DeptId[];
+  /** כמה ביקורים כבר תרמו למסלול */
+  routeVisits?: number;
+  /** הביקורים האחרונים, שמהם מחושב הממוצע */
+  routeHistory?: DeptId[][];
+};
+
+/** מכמה ביקורים המסלול נחשב אמין מספיק כדי להנחות לפיו */
+export const ROUTE_CONFIDENT_AFTER = 2;
+
+export const PRICE_OPTIONS: {
+  level: PriceLevel;
+  label: string;
+  emoji: string;
+  desc: string;
+}[] = [
+  { level: 1, label: "זול", emoji: "💚", desc: "מציג הכל" },
+  { level: 3, label: "רגיל", emoji: "💛", desc: "דחוף + רגיל" },
+  { level: 5, label: "יקר", emoji: "❤️", desc: "רק דחוף" },
+];
+
+export function priceLabel(level: PriceLevel): string {
+  return (
+    PRICE_OPTIONS.find((p) => p.level === level)?.label ??
+    (level >= 4 ? "יקר" : level === 3 ? "רגיל" : "זול")
+  );
+}
+
+/** אילו עדיפויות מציגים בסופר לפי רמת המחיר שלו */
+export function allowedPriosFor(level: PriceLevel): Prio[] {
+  if (level >= 4) return [1];
+  if (level === 3) return [1, 2];
+  return [1, 2, 3];
+}
 
 export const DEPT_IDS = DEPTS.map((d) => d.id) as DeptId[];
 

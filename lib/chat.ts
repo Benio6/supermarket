@@ -9,16 +9,29 @@ export type ChatMsg = {
   image?: string;
   /** סימון שההודעה כללה תמונה, כדי שאחרי טעינה מחדש עדיין נראה את זה */
   hadImage?: boolean;
+  /** אישורי הפעולות שבוצעו על הרשימה בעקבות ההודעה */
   log?: string[];
+  /** סיכום סוף שיחה */
+  summary?: string[];
 };
 
-export type ChatState = { mode: ChatMode; messages: ChatMsg[] };
+export type ChatState = {
+  mode: ChatMode;
+  messages: ChatMsg[];
+  /** הקשר הדחיפות שנשמר לאורך השיחה (הורשת הקשר) */
+  contextPrio?: 1 | 2 | 3 | null;
+};
 
 const KEY = "fam-chat";
 /** תקרה כדי שהאחסון לא יגדל בלי גבול */
 const MAX_MESSAGES = 60;
 
-type Stored = { v: 1; mode: ChatMode; messages: ChatMsg[] };
+type Stored = {
+  v: 1;
+  mode: ChatMode;
+  messages: ChatMsg[];
+  contextPrio?: 1 | 2 | 3 | null;
+};
 
 function isMode(v: unknown): v is ChatMode {
   return v === "normal" || v === "shop" || v === "consult";
@@ -51,11 +64,13 @@ export function loadChat(): ChatState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Stored;
     if (!parsed || parsed.v !== 1) return null;
+    const ctx = parsed.contextPrio;
     return {
       mode: isMode(parsed.mode) ? parsed.mode : "normal",
       messages: Array.isArray(parsed.messages)
         ? parsed.messages.filter(isMsg)
         : [],
+      contextPrio: ctx === 1 || ctx === 2 || ctx === 3 ? ctx : null,
     };
   } catch {
     return null;
@@ -65,7 +80,12 @@ export function loadChat(): ChatState | null {
 export function saveChat(state: ChatState): void {
   if (typeof window === "undefined") return;
   const write = (messages: ChatMsg[]) => {
-    const payload: Stored = { v: 1, mode: state.mode, messages };
+    const payload: Stored = {
+      v: 1,
+      mode: state.mode,
+      messages,
+      contextPrio: state.contextPrio ?? null,
+    };
     window.localStorage.setItem(KEY, JSON.stringify(payload));
   };
 

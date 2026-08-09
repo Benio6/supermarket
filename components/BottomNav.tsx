@@ -3,10 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+/**
+ * בגלל dir="rtl" הפריט הראשון מופיע מימין —
+ * כלומר הסדר על המסך הוא: עוזר | קנייה | רשימה
+ */
 const TABS = [
-  { href: "/", label: "רשימה", icon: "📝" },
-  { href: "/shop", label: "קנייה", icon: "🛒" },
   { href: "/ai", label: "עוזר", icon: "✨" },
+  { href: "/shop", label: "קנייה", icon: "🛒" },
+  { href: "/list", label: "רשימה", icon: "📝" },
 ];
 
 export default function BottomNav() {
@@ -16,8 +20,7 @@ export default function BottomNav() {
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-black/5 bg-white/95 backdrop-blur safe-bottom">
       <div className="mx-auto flex w-full max-w-lg">
         {TABS.map((tab) => {
-          const active =
-            tab.href === "/" ? pathname === "/" : pathname.startsWith(tab.href);
+          const active = pathname.startsWith(tab.href);
           return (
             <Link
               key={tab.href}

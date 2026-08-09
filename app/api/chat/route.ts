@@ -1,6 +1,18 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
-import { DEPTS, PRIO_META, deptOf, type Item } from "@/lib/types";
+import {
+  DAY_NAMES,
+  DEPTS,
+  PRIO_META,
+  allowedPriosFor,
+  deptOf,
+  priceLabel,
+  type Item,
+  type PriceLevel,
+  type WeekDay,
+} from "@/lib/types";
+import { URGENCY_RULES_TEXT } from "@/lib/urgency";
+import { CONTEXT_RULES_TEXT } from "@/lib/context";
 
 export const runtime = "nodejs";
 
@@ -8,11 +20,20 @@ const MODEL = "claude-opus-5";
 
 type ChatMode = "normal" | "shop" | "consult";
 
+type MemoryHint = { prio: number; usedOn: number[]; confident: boolean };
+
 type Body = {
   messages?: { role: "user" | "assistant"; content: string }[];
   chatMode?: ChatMode;
   items?: Item[];
   imageBase64?: string;
+  today?: number;
+  store?: { name: string; priceLevel: PriceLevel } | null;
+  memory?: Record<string, MemoryHint>;
+  contextPrio?: number | null;
+  contextReason?: string;
+  currentDept?: string | null;
+  routeHint?: string | null;
 };
 
 const ALLOWED_MEDIA = [
@@ -32,16 +53,25 @@ const PRIO_LINES = ([1, 2, 3] as const)
 
 const ACTIONS_PROTOCOL = `
 ## עדכון הרשימה
-כשצריך לשנות משהו ברשימה, הוסיפו בסוף התשובה בלוק פעולות. הבלוק לא מוצג למשתמש — הוא מבוצע אוטומטית.
+כשצריך לשנות משהו ברשימה, הוסיפו בסוף התשובה בלוק פעולות. הבלוק לא מוצג למשתמש — הוא מבוצע אוטומטית והמשתמש רואה אישור קצר לכל פעולה.
 
-<ACTIONS>[{"op":"add","name":"חלב 3%","dept":"dairy","prio":1,"note":"תנובה"}]</ACTIONS>
+<ACTIONS>
+[
+  { "action": "add", "name": "חלב", "dept": "dairy", "prio": 1 },
+  { "action": "update_prio", "name": "קמח", "prio": 2 },
+  { "action": "remove", "name": "עגבניות" },
+  { "action": "check", "name": "לחם" },
+  { "action": "downgrade_prio", "name": "שמן" }
+]
+</ACTIONS>
 
-פעולות אפשריות:
-- {"op":"add","name":"...","dept":"...","prio":1|2|3,"note":"...","qty":"..."} — הוספת פריט (dept, note ו-qty אופציונליים)
-- {"op":"done","name":"..."} — סימון כנקנה
-- {"op":"undone","name":"..."} — החזרה לרשימה
-- {"op":"delete","name":"..."} — מחיקה
-- {"op":"prio","name":"...","prio":1|2|3} — שינוי עדיפות
+הפעולות:
+- \`add\` — הוספת פריט. שדות רשות: dept, prio, note, qty
+- \`update_prio\` — קביעת עדיפות מדויקת (חובה prio)
+- \`downgrade_prio\` — הורדת דחיפות בשלב אחד. **לא מוחק** פריט
+- \`check\` — סימון כנקנה
+- \`remove\` — מחיקה מהרשימה
+- \`set_usage_days\` — שמירת ימי השימוש במוצר, למשל { "action": "set_usage_days", "name": "קמח", "usedOn": [5] }
 
 מזהי מחלקות:
 ${DEPT_LINES}
@@ -51,25 +81,117 @@ ${PRIO_LINES}
 
 כללים:
 - בלוק אחד לכל היותר בכל תשובה, ורק כשבאמת צריך לשנות משהו.
-- ב-name לפעולות על פריט קיים — השתמשו בשם המדויק כפי שהוא מופיע ברשימה.
-- אל תזכירו את הבלוק בטקסט. פשוט כתבו בעברית מה עשיתם ("הוספתי חלב ולחם 👍").
+- ב-name לפעולות על פריט קיים — השם המדויק כפי שהוא ברשימה.
+- אל תזכירו את הבלוק בטקסט ואל תפרטו את הפעולות — המשתמש כבר רואה אישור לכל אחת. כתבו משפט קצר וטבעי בלבד.
 `.trim();
 
-function systemFor(mode: ChatMode, items: Item[]): string {
-  const base = `אתה עוזר קניות משפחתי באפליקציה בעברית. דבר עברית טבעית, ידידותית וקצרה. השתמש באימוג'ים במידה. אל תשתמש ב-Markdown מורכב — טקסט פשוט וקצר.
+function contextSection(contextPrio: number | null): string {
+  const active =
+    contextPrio === 1 || contextPrio === 2 || contextPrio === 3
+      ? `**ההקשר הפעיל בשיחה כרגע: ${PRIO_META[contextPrio].label} (prio ${contextPrio}).** פריט שנאמר בהמשך לאותו הקשר יורש את הדחיפות הזו.`
+      : "אין כרגע הקשר פעיל.";
+  return `
+## הורשת הקשר בתוך השיחה
+${active}
 
-${listContext(items)}`;
+${CONTEXT_RULES_TEXT}
+
+דוגמה:
+"ממש בא לי לאסן" → לאסן prio 1, ההקשר נקבע לדחוף
+"צריך בשביל זה שמנת חמוצה" → שמנת prio 1 (ירשה)
+"וגם בצל" → בצל prio 1 (עדיין באותו הקשר)
+"אה ואם רואים תותים" → תותים prio 3, ההקשר מתאפס
+`.trim();
+}
+
+const URGENCY_SECTION = `
+## זיהוי דחיפות מהטקסט
+${URGENCY_RULES_TEXT}
+
+"קניתי רק אחד" או "לקחתי חצי" אף פעם לא מוחקים פריט — רק מורידים דחיפות בשלב אחד.
+`.trim();
+
+function learningSection(memory: Record<string, MemoryHint>): string {
+  const known = Object.entries(memory);
+  if (known.length === 0) {
+    return `
+## למידה
+עוד לא למדנו שום מוצר. כשמוסיפים מוצר בפעם הראשונה מותר לשאול שאלה קצרה אחת (למשל "מתי אתם משתמשים בקמח?") — ואז לשמור עם set_usage_days ולא לשאול שוב לעולם.
+`.trim();
+  }
+
+  const confident = known.filter(([, e]) => e.confident).map(([n]) => n);
+  const withDays = known
+    .filter(([, e]) => e.usedOn.length > 0)
+    .map(([n, e]) => `${n} → ${e.usedOn.map((d) => DAY_NAMES[d]).join("/")}`);
+
+  return `
+## למידה
+מוצרים שכבר למדנו — **אל תשאלו עליהם שום דבר**, פשוט הוסיפו בעדיפות שנשמרה:
+${confident.length ? confident.join(", ") : "— אין עדיין —"}
+
+ימי שימוש ידועים (אל תשאלו שוב):
+${withDays.length ? withDays.join("\n") : "— אין עדיין —"}
+
+למוצר חדש לגמרי מותר לשאול שאלה קצרה אחת על יום השימוש, ואז לשמור עם set_usage_days.
+`.trim();
+}
+
+function systemFor(
+  mode: ChatMode,
+  items: Item[],
+  today: WeekDay,
+  store: { name: string; priceLevel: PriceLevel } | null,
+  memory: Record<string, MemoryHint>,
+  contextPrio: number | null,
+  currentDept: string | null,
+  routeHint: string | null
+): string {
+  const base = `אתה עוזר קניות משפחתי באפליקציה בעברית. דבר עברית טבעית, ידידותית וקצרה. השתמש באימוג'ים במידה. אל תשתמש ב-Markdown מורכב.
+
+**היום יום ${DAY_NAMES[today]}.** מוצר שמשויך ליום שימוש שמתקרב — העלה לו את הדחיפות. מוצר שהיום הוא יום השימוש שלו — דחוף (prio 1).
+
+${listContext(items)}
+
+${learningSection(memory)}`;
 
   if (mode === "shop") {
+    const storeLine = store
+      ? `המשתמש נמצא ב**${store.name}** (${priceLabel(store.priceLevel)}). בסופר הזה מציגים רק עדיפויות: ${allowedPriosFor(store.priceLevel).join(", ")}.
+${
+  store.priceLevel >= 4
+    ? "זה סופר יקר — אל תציע לקנות פריטים שאינם דחופים. אם שואלים על פריט לא דחוף, אמור שעדיף לחכות לסופר זול יותר."
+    : store.priceLevel === 3
+      ? "סופר בינוני — דחוף ורגיל כן, 'כשיש' עדיף לדחות."
+      : "סופר זול — אפשר לקנות הכל, כולל פריטי 'כשיש'."
+}`
+      : "עוד לא ידוע באיזה סופר המשתמש נמצא. שאל אותו קודם.";
+
+    const routeLine = routeHint
+      ? `\n## המסלול הרגיל בסופר הזה
+המשתמש כבר הלך כאן כמה פעמים ואנחנו מכירים את הסדר שלו.
+${currentDept ? `הוא נמצא עכשיו ב**${deptOf(currentDept as never).name}**.` : ""}
+**כשהוא מסיים במחלקה הנוכחית, הנחה אותו למחלקה הבאה בניסוח הזה בדיוק:**
+"${routeHint}"
+אל תמציא סדר אחר ואל תוסיף מחלקות שאין בהן פריטים.`
+      : `\n## מסלול
+עוד לא למדנו את סדר המחלקות בסופר הזה. אם המשתמש מדווח איפה הוא ("אני במחלקת ירקות", "עברתי לחלב") — פשוט המשך לעזור, הסדר נלמד ברקע.`;
+
     return `${base}
 
 ## המצב הנוכחי: 🛒 סופר
-המשתמש נמצא עכשיו בחנות עם העגלה.
-- הנחה אותו מחלקה־מחלקה לפי סדר המחלקות ברשימה, ותן לו לרכז קניות באותו אזור.
-- כשהוא אומר שקנה משהו — סמן את זה כנקנה מיד.
+${storeLine}
+
+- הנחה מחלקה־מחלקה לפי סדר המחלקות ברשימה.
+- כשהוא אומר שקנה משהו — \`check\` מיד.
+- "קניתי רק אחד" / "לקחתי חצי" → \`downgrade_prio\`, לא \`check\` ולא \`remove\`.
 - תשובות קצרות מאוד. הוא עסוק, מחזיק טלפון ביד אחת.
-- הזכר קודם את הפריטים הדחופים 🔴.
-- אם צילם מוצר — אמור אם זה מתאים למה שברשימה.
+- אם צילם מוצר — אמור אם הוא מתאים למה שברשימה.
+${routeLine}
+
+${URGENCY_SECTION}
+
+${contextSection(contextPrio)}
 
 ${ACTIONS_PROTOCOL}`;
   }
@@ -81,7 +203,7 @@ ${ACTIONS_PROTOCOL}`;
 ענה על שאלות לגבי מוצרים: השוואות, ערך תזונתי, איך בוחרים, תחליפים, מה מתאים למתכון.
 - **אסור לך לשנות את הרשימה בשום צורה.** אל תפיק בלוק פעולות בכלל.
 - אם המשתמש מבקש להוסיף משהו, הצע לו לעבור למצב 🏠 רגיל.
-- אם צילם מוצר — נתח אותו: מה זה, איכות, מה כדאי לשים לב אליו.
+- אם צילם מוצר — נתח אותו: מה זה, איכות, למה לשים לב.
 - תשובה של 2–4 משפטים, לעניין.`;
   }
 
@@ -90,10 +212,12 @@ ${ACTIONS_PROTOCOL}`;
 ## המצב הנוכחי: 🏠 רגיל
 המשתמש כותב בשפה חופשית מה חסר בבית ("נגמר החלב", "תוסיף לחם וביצים לשבת").
 - פרק משפט לכמה פריטים כשצריך, והוסף כל אחד בנפרד.
-- קבע מחלקה ועדיפות הגיוניות בעצמך; אל תשאל שאלות מיותרות.
-- "נגמר" / "חייבים" / "דחוף" → עדיפות 1. ברירת מחדל → 2. "אם יש" / "כדאי" → 3.
-- אם צילם מוצר — זהה אותו והוסף לרשימה.
-- אשר בקצרה מה עשית.
+- קבע מחלקה ועדיפות בעצמך; אל תשאל שאלות מיותרות.
+- אם המשתמש כותב "זהו" / "תודה" / "סיימתי" — סכם במשפט אחד. הסיכום המפורט מוצג אוטומטית מתחת לתשובה, אל תחזור עליו.
+
+${URGENCY_SECTION}
+
+${contextSection(contextPrio)}
 
 ${ACTIONS_PROTOCOL}`;
 }
@@ -107,7 +231,7 @@ function listContext(items: Item[]): string {
   const line = (i: Item) =>
     `- ${i.name} | ${deptOf(i.dept).name} | ${PRIO_META[i.prio].label}${
       i.note ? ` | הערה: ${i.note}` : ""
-    }${i.by ? ` | הוסיף/ה: ${i.by}` : ""}`;
+    }`;
 
   return `## הרשימה כרגע
 ### עוד לא נקנה (${open.length})
@@ -149,8 +273,25 @@ export async function POST(req: Request) {
       : "normal";
   const items = Array.isArray(body.items) ? body.items : [];
   const incoming = Array.isArray(body.messages) ? body.messages : [];
+  const today = (
+    typeof body.today === "number" && body.today >= 0 && body.today <= 6
+      ? body.today
+      : new Date().getDay()
+  ) as WeekDay;
+  const store = body.store ?? null;
+  const memory =
+    body.memory && typeof body.memory === "object" ? body.memory : {};
+  const contextPrio =
+    body.contextPrio === 1 || body.contextPrio === 2 || body.contextPrio === 3
+      ? body.contextPrio
+      : null;
+  const currentDept =
+    typeof body.currentDept === "string" ? body.currentDept : null;
+  const routeHint =
+    typeof body.routeHint === "string" && body.routeHint.trim()
+      ? body.routeHint
+      : null;
 
-  // רק 20 ההודעות האחרונות, בלי הודעות ריקות
   const history = incoming
     .filter((m) => (m.role === "user" || m.role === "assistant") && m.content?.trim())
     .slice(-20);
@@ -164,7 +305,6 @@ export async function POST(req: Request) {
     content: m.content,
   }));
 
-  // צירוף תמונה להודעת המשתמש האחרונה
   const image = body.imageBase64 ? parseDataUrl(body.imageBase64) : null;
   const last = messages[messages.length - 1];
   if (image && last.role === "user") {
@@ -187,7 +327,16 @@ export async function POST(req: Request) {
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      system: systemFor(chatMode, items),
+      system: systemFor(
+        chatMode,
+        items,
+        today,
+        store,
+        memory,
+        contextPrio,
+        currentDept,
+        routeHint
+      ),
       messages,
     });
 

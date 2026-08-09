@@ -4,12 +4,15 @@ import { useState } from "react";
 import Sheet from "./Sheet";
 import { addItem, classifyInBackground, recallProduct, rememberProduct } from "@/lib/store";
 import { DEPTS, PRIO_META, type DeptId, type Prio } from "@/lib/types";
+import { detectUrgency } from "@/lib/urgency";
 
 const PRIOS: Prio[] = [1, 2, 3];
 
 export default function QuickAdd() {
   const [name, setName] = useState("");
   const [prio, setPrio] = useState<Prio>(2);
+  /** ברגע שהמשתמש בחר עדיפות ידנית, מפסיקים לזהות אוטומטית */
+  const [prioTouched, setPrioTouched] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   // שדות ה־bottom sheet
@@ -22,14 +25,35 @@ export default function QuickAdd() {
   function reset() {
     setName("");
     setPrio(2);
+    setPrioTouched(false);
     setDept("auto");
     setNote("");
     setBy("");
   }
 
+  /** מזהה דחיפות תוך כדי הקלדה ובוחר את הצ'יפ המתאים, עד שהמשתמש בוחר בעצמו */
+  function onNameChange(value: string) {
+    setName(value);
+    if (prioTouched) return;
+    const signal = detectUrgency(value);
+    if (signal?.prio) setPrio(signal.prio);
+  }
+
+  function pickPrio(p: Prio) {
+    setPrio(p);
+    setPrioTouched(true);
+  }
+
   function submit(withDetails: boolean) {
-    const trimmed = name.trim();
-    if (!trimmed) return;
+    const raw = name.trim();
+    if (!raw) return;
+
+    // "נגמר החלב" → הפריט נשמר בשם "החלב", הדחיפות כבר נקלטה מהביטוי
+    const signal = detectUrgency(raw);
+    const stripped = signal?.matched
+      ? raw.replace(new RegExp(signal.matched, "i"), "").trim()
+      : raw;
+    const trimmed = stripped || raw;
 
     const remembered = recallProduct(trimmed);
     const chosenDept: DeptId | undefined =
@@ -73,7 +97,7 @@ export default function QuickAdd() {
                       <button
                         key={p}
                         type="button"
-                        onClick={() => setPrio(p)}
+                        onClick={() => pickPrio(p)}
                         className={`flex-1 rounded-xl border px-2 py-1.5 text-sm font-medium transition ${
                           on
                             ? "border-brand bg-brand text-white"
@@ -91,7 +115,7 @@ export default function QuickAdd() {
             <div className="flex items-center gap-2">
               <input
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => onNameChange(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -132,7 +156,7 @@ export default function QuickAdd() {
             </label>
             <input
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => onNameChange(e.target.value)}
               placeholder="לדוגמה: קוטג׳ 5%"
               className="field"
               autoFocus
@@ -148,7 +172,7 @@ export default function QuickAdd() {
                 <button
                   key={p}
                   type="button"
-                  onClick={() => setPrio(p)}
+                  onClick={() => pickPrio(p)}
                   className={`flex-1 rounded-xl border px-2 py-2 text-sm font-medium transition ${
                     prio === p
                       ? "border-brand bg-brand text-white"

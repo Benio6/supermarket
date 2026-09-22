@@ -102,6 +102,11 @@ export function saveChat(state: ChatState): void {
   }
 }
 
+/**
+ * מוחק **רק** את היסטוריית השיחה.
+ * fam-product-memory (זיכרון המוצרים) ו-fam-stores (הסופרים והמסלולים)
+ * הם ידע נצבר ולא נמחקים כאן לעולם.
+ */
 export function clearChat(): void {
   if (typeof window === "undefined") return;
   try {

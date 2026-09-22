@@ -139,7 +139,13 @@ export default function AiPage() {
     ]);
   }
 
+  /**
+   * מנקה את השיחה בלבד.
+   * המסלול שנצפה עד כה נשמר קודם — אחרת ניקוי באמצע ביקור היה מוחק
+   * את הלמידה של אותו ביקור. fam-product-memory ו-fam-stores לא נגעים.
+   */
   function resetChat() {
+    commitRoute();
     setMessages([]);
     setImage(null);
     setError(null);

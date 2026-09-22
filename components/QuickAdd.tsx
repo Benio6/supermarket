@@ -83,7 +83,7 @@ export default function QuickAdd() {
     <>
       <div
         className="fixed inset-x-0 z-30"
-        style={{ bottom: "calc(62px + env(safe-area-inset-bottom, 0px))" }}
+        style={{ bottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="mx-auto w-full max-w-lg px-3 pb-2">
           <div className="card overflow-hidden border border-black/5 p-2">

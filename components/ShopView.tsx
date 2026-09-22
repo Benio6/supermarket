@@ -28,7 +28,7 @@ import { buildViews, filterViews, groupViews, sortViews } from "@/lib/view";
 
 const ALL_PRIOS: Prio[] = [1, 2, 3];
 
-export default function ShopPage() {
+export default function ShopView() {
   const items = useItems();
   const stores = useStores();
   const [filter, setFilter] = useState<FilterId>("all");

@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Heebo } from "next/font/google";
-import BottomNav from "@/components/BottomNav";
 import "./globals.css";
 
 const heebo = Heebo({
@@ -32,7 +31,6 @@ export default function RootLayout({
         <div className="mx-auto flex min-h-dvh w-full max-w-lg flex-col">
           {children}
         </div>
-        <BottomNav />
       </body>
     </html>
   );

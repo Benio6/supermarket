@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import StorePicker from "@/components/StorePicker";
+import ViewPanel from "@/components/ViewPanel";
+import { detectMode, detectViewRequest, type ChatView } from "@/lib/intent";
 import { applyActions, parseActions, type ActionResult } from "@/lib/aiActions";
 import {
   clearChat,
@@ -45,15 +47,22 @@ function isEndPhrase(text: string): boolean {
 
 const WELCOME = `שלום! אני העוזר של הרשימה 👋
 
-בחרו מצב למעלה:
+פשוט תכתבו, ואני אבין לבד מה צריך:
 
-🏠 **רגיל** — פשוט תכתבו מה חסר ("נגמר החלב ותביא לחם"), ואני אוסיף ואעדכן את הרשימה בשבילכם.
+🏠 **מה חסר** — "נגמר החלב ותביא לחם", ואני אוסיף ואעדכן את הרשימה.
 
-🛒 **סופר** — כשאתם בחנות. אשאל באיזה סופר אתם, ואתאים את הרשימה לרמת המחירים שלו.
+🛒 **בסופר** — "אני בשופרסל". אשאל באיזה סופר אתם, ואתאים את הרשימה לרמת המחירים שלו. "יצאתי מהסופר" מסיים את הקנייה.
 
-💬 **ייעוץ** — שאלות על מוצרים: מה בריא יותר, איך בוחרים אבוקדו, תחליף לחלב. הרשימה נשארת כמו שהיא.
+💬 **שאלות** — מה בריא יותר, איך בוחרים אבוקדו, תחליף לחלב. הרשימה נשארת כמו שהיא.
+
+📝 **"תראה לי את הרשימה"** או **"מסך קנייה"** — פותח את המסך המלא.
 
 אפשר גם לצלם מוצר 📷 ואני אזהה אותו. כשתסיימו — כתבו "זהו" ואציג סיכום.`;
+
+const VIEW_LABEL: Record<ChatView, string> = {
+  list: "📝 פתיחת הרשימה",
+  shop: "🛒 פתיחת מסך הקנייה",
+};
 
 export default function AiPage() {
   // נרשמים לרשימה כדי להתעדכן משינויים חיצוניים (כולל מטאב אחר).
@@ -73,6 +82,9 @@ export default function AiPage() {
   const [contextPrio, setContextPrio] = useState<Prio | null>(null);
   /** סדר המחלקות שדווח בביקור הנוכחי — נשמר כמסלול בסוף הביקור */
   const [walked, setWalked] = useState<DeptId[]>([]);
+  /** מסך הרשימה / הקנייה שפתוח מעל הצ'אט */
+  const [openView, setOpenView] = useState<ChatView | null>(null);
+  const closeView = useCallback(() => setOpenView(null), []);
   const committedRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -185,6 +197,28 @@ export default function AiPage() {
     setInput("");
     setImage(null);
     setError(null);
+
+    // בקשה לראות את הרשימה / מסך הקנייה — נפתח מעל הצ'אט, בלי פנייה ל-API
+    const view = userMsg.image ? null : detectViewRequest(text);
+    if (view) {
+      setMessages([
+        ...history,
+        {
+          role: "assistant",
+          content: view === "list" ? "הנה הרשימה 📝" : "הנה מסך הקנייה 🛒",
+          view,
+        },
+      ]);
+      setOpenView(view);
+      return;
+    }
+
+    // המצב מזוהה מהשפה במקום מבחירה ידנית
+    const activeMode = detectMode(text, mode);
+    if (activeMode !== mode) switchMode(activeMode);
+    // כניסה לסופר: קודם בוחרים סופר, ואז ממשיכים את השיחה
+    if (activeMode === "shop" && mode !== "shop") return;
+
     setLoading(true);
 
     const decision = applyContext(text, contextPrio);
@@ -192,7 +226,7 @@ export default function AiPage() {
     const ending = isEndPhrase(text);
 
     // דיווח מיקום במצב סופר → מרחיב את המסלול שנצפה בביקור הזה
-    const reported = mode === "shop" ? detectDeptVisit(text) : null;
+    const reported = activeMode === "shop" ? detectDeptVisit(text) : null;
     const nextWalked = reported ? appendVisit(walked, reported) : walked;
     if (reported && nextWalked !== walked) setWalked(nextWalked);
     const currentDept = reported ?? nextWalked[nextWalked.length - 1] ?? null;
@@ -207,7 +241,7 @@ export default function AiPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: history.map((m) => ({ role: m.role, content: m.content })),
-          chatMode: mode,
+          chatMode: activeMode,
           items: freshItems,
           imageBase64: userMsg.image ?? undefined,
           today,
@@ -218,7 +252,7 @@ export default function AiPage() {
             : null,
           currentDept,
           routeHint:
-            mode === "shop" && routeIsConfident(store, ROUTE_CONFIDENT_AFTER)
+            activeMode === "shop" && routeIsConfident(store, ROUTE_CONFIDENT_AFTER)
               ? routeHint(
                   nextStopInRoute(
                     store?.route,
@@ -258,9 +292,9 @@ export default function AiPage() {
         }
       }
 
-      if (ending && mode === "shop") commitRoute(nextWalked);
+      if (ending && activeMode === "shop") commitRoute(nextWalked);
 
-      const results = mode === "consult" ? [] : applyActions(actions);
+      const results = activeMode === "consult" ? [] : applyActions(actions);
       if (results.length) setSessionLog((prev) => [...prev, ...results]);
 
       const all = [...sessionLog, ...results];
@@ -299,7 +333,10 @@ export default function AiPage() {
             <p className="truncate text-sm text-brand/50">
               {mode === "shop" && store
                 ? `${store.name} · ${priceLabel(store.priceLevel)}`
-                : MODES.find((m) => m.id === mode)?.hint}
+                : (() => {
+                    const m = MODES.find((x) => x.id === mode);
+                    return m ? `${m.label} · ${m.hint}` : "";
+                  })()}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -313,18 +350,6 @@ export default function AiPage() {
             )}
             <span className="text-3xl">✨</span>
           </div>
-        </div>
-
-        <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-3">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => switchMode(m.id)}
-              className={`chip ${mode === m.id ? "chip-on" : "chip-off"}`}
-            >
-              {m.label}
-            </button>
-          ))}
         </div>
       </header>
 
@@ -369,6 +394,15 @@ export default function AiPage() {
               ) : null}
 
               <p className="whitespace-pre-wrap">{m.content}</p>
+
+              {m.view && (
+                <button
+                  onClick={() => setOpenView(m.view!)}
+                  className="mt-2 w-full rounded-xl bg-brand px-4 py-2.5 font-medium text-white transition active:scale-[0.98]"
+                >
+                  {VIEW_LABEL[m.view]}
+                </button>
+              )}
 
               {m.log && (
                 <ul className="mt-2 space-y-0.5 border-t border-black/5 pt-2 text-xs text-brand/50">
@@ -421,7 +455,7 @@ export default function AiPage() {
 
       <div
         className="fixed inset-x-0 z-30"
-        style={{ bottom: "calc(62px + env(safe-area-inset-bottom, 0px))" }}
+        style={{ bottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="mx-auto w-full max-w-lg px-3 pb-2">
           <div className="card border border-black/5 p-2">
@@ -485,6 +519,8 @@ export default function AiPage() {
           </div>
         </div>
       </div>
+
+      <ViewPanel view={openView} onClose={closeView} />
     </main>
   );
 }

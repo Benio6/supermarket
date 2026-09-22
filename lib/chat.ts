@@ -13,6 +13,8 @@ export type ChatMsg = {
   log?: string[];
   /** סיכום סוף שיחה */
   summary?: string[];
+  /** מסך שנפתח מתוך ההודעה — אפשר לפתוח אותו שוב מהבועה */
+  view?: "list" | "shop";
 };
 
 export type ChatState = {

@@ -25,7 +25,7 @@ import { buildViews, filterViews, groupViews, sortViews } from "@/lib/view";
 
 const PRIOS: Prio[] = [1, 2, 3];
 
-export default function ListPage() {
+export default function ListView() {
   const items = useItems();
   const [filter, setFilter] = useState<FilterId>("all");
   const [editing, setEditing] = useState<Item | null>(null);
